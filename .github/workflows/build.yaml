@@ -10,7 +10,7 @@ on:
 
 jobs:
   query:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       boards: ${{ steps.query.outputs.boards }}
       distros: ${{ steps.query.outputs.distros }}
