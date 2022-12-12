@@ -55,7 +55,7 @@ find_root_part() {
     echo $ROOT_PART
 }
 
-shrink() {
+shrink-image() {
     local ROOT_PART="$(find_root_part "$1")"
     if [[ -z $ROOT_PART ]]
     then
@@ -134,23 +134,30 @@ Supported image generation options:
     -s, --shrink            Shrink root partition after image is generated
                             Require root permission and additional dependencies
     --compress              Compress the final image with xz
-    --native-debos          Use locally installed debos instead of docker
+    -n, --native-build      Use locally installed debos instead of docker
                             This is a workaround for building Ubuntu image on Ubuntu host
                             Require running rbuild with sudo
     -d, --debug             Drop into a debug shell when build failed
     -r, --rootfs            Do not use saved rootfs and regenerate it
     -k, --kernel [deb]      Use custom Linux kernel package
+                            This option also requires the matching kernel header package
+                            under the same folder
     -f, --firmware [deb]    Use custom firmware package
+    -c, --custom [profile]  Try matching locally built bsp packages with the same profile
+                            Implies --kernel and --firmware if available packages are found
+                            If --debug is specified before this option, rbuild will also
+                            search debug version of the package first
     -v, --no-vendor-package Do not install vendor packages
+    -o, --overlay [profile] Specify an optional overlay that should be enabled in the image
+    -t, --timestamp         Add build timestamp to the filename
+    -h, --help              Show this help message
 
-Alternative functionalities
-    --json [catagory]   Print supported options in json format
-                        Available catagories: $(get_supported_infos)
-    --shrink-image [image]
-                        Shrink generated image
-    --write-image [image] [/dev/block]
-                        Write image to block device, support --shrink flag
-    -h, --help          Show this help message
+Alternative commands
+    json [catagory]         Print supported options in json format
+                            Available catagories: $(get_supported_infos)
+    shrink-image [image]    Shrink generated image
+    write-image [image] [/dev/block]
+                            Write image to block device, support --shrink flag
 
 Supported board:
 $(printf_array "    %s\n" "$(get_supported_boards)")
@@ -161,7 +168,6 @@ $(printf_array "    %s\n" "$(get_supported_distros)")
 Supported flavors (default to the first one):
 $(printf_array "    %s\n" "$(get_supported_flavors)")
 EOF
-    exit "$1"
 }
 
 printf_array() {
@@ -181,6 +187,11 @@ printf_array() {
 }
 
 get_supported_boards() {
+    while (( $# > 0 )) && [[ "$1" == "--" ]]
+    do
+        shift
+    done
+
     local BOARDS=()
     for f in $SCRIPT_DIR/configs/*.conf
     do
@@ -190,11 +201,21 @@ get_supported_boards() {
 }
 
 get_supported_distros() {
+    while (( $# > 0 )) && [[ "$1" == "--" ]]
+    do
+        shift
+    done
+
     local DISTROS=("debian" "ubuntu")
     echo "${DISTROS[@]}"
 }
 
 get_supported_flavors() {
+    while (( $# > 0 )) && [[ "$1" == "--" ]]
+    do
+        shift
+    done
+
     local FLAVORS=()
     for f in $SCRIPT_DIR/common/flavors/*.yaml
     do
@@ -204,6 +225,11 @@ get_supported_flavors() {
 }
 
 get_supported_infos() {
+    while (( $# > 0 )) && [[ "$1" == "--" ]]
+    do
+        shift
+    done
+
     local INFOS=("boards" "distros" "flavors")
     echo "${INFOS[@]}"
 }
@@ -216,13 +242,18 @@ in_array() {
 
 json() {
     local ARRAY=($(get_supported_infos))
-    if ! in_array "$1" "${ARRAY[@]}"
+    if ! in_array "$@" "${ARRAY[@]}"
     then
         error $EXIT_UNKNOWN_OPTION "$1"
     fi
 
-    printf_array "json" $(get_supported_$1)
-    exit 0
+    local output
+    output=( $(get_supported_$@) )
+    if (( $? != 0 ))
+    then
+        return 1
+    fi
+    printf_array "json" "${output[@]}"
 }
 
 write-image() {
@@ -237,11 +268,11 @@ write-image() {
     if ! [[ -f $IMAGE ]]
     then
         echo "$IMAGE does not exist."
-        exit 1
+        return 1
     elif ! [[ -b $BLOCKDEV ]]
     then
         echo "$BLOCKDEV is not a block device."
-        exit 1
+        return 1
     fi
 
     if file $IMAGE | grep -q "XZ compressed"
@@ -257,16 +288,13 @@ write-image() {
         echo "Writting zip image..."
         unzip -p $IMAGE | sudo dd of=$BLOCKDEV bs=16M conv=fsync status=progress
     else
-        if [[ $RBUILD_SHRINK == "yes" ]]
+        if $RBUILD_SHRINK
         then
-            shrink "$IMAGE"
+            shrink-image "$IMAGE"
         fi
         echo "Writting raw image..."
         sudo dd if=$IMAGE of=$BLOCKDEV bs=16M conv=fsync status=progress
     fi
-
-    finish
-    exit
 }
 
 debos() {
@@ -286,7 +314,7 @@ debos() {
     if [[ $SCRIPT_DIR != $PWD ]]
     then
         DOCKER_OPTIONS+=( "--mount" "type=bind,source=$SCRIPT_DIR,destination=$SCRIPT_DIR" )
-        if [[ "$RBUILD_NATIVE_DEBOS" == "yes" ]]
+        if $NATIVE_BUILD
         then
             ln -s "$(realpath "--relative-to=$PWD" "$SCRIPT_DIR/.rootfs")" .rootfs
         else
@@ -311,7 +339,7 @@ debos() {
 
     local DEBOS_OPTIONS="--cpus=$(nproc) --memory=$(( DEV_SHM_REQUIRE - 1 ))G"
 
-    if [[ "$RBUILD_NATIVE_DEBOS" == "yes" ]]
+    if $NATIVE_BUILD
     then
         env debos --disable-fakemachine $DEBOS_OPTIONS "$@"
     else
@@ -322,86 +350,138 @@ debos() {
     fi
 }
 
-build() {
-    local RBUILD_SHRINK=
-    local RBUILD_COMPRESSION=
-    local DEBOS_OPTIONS=
-    local DEBOS_ROOTFS=
-    local RBUILD_KERNEL=
-    local RBUILD_FIRMWARE=
-    local INSTALL_VENDOR_PACKAGE="true"
-    local RBUILD_AS_ROOT="false"
+main() {
+    if command -v notify-send >/dev/null
+    then
+        local NOTIFY_SEND=notify-send
+    else
+        local NOTIFY_SEND=echo
+    fi
+
+    SECONDS=0
+
+    local SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
     rm -rf "$SCRIPT_DIR/common/.packages"
     mkdir -p "$SCRIPT_DIR/common/.packages"
 
-    if (( $# == 0 ))
+    local ARGV=("$@")
+    if ! local TEMP="$(getopt -o "sndrk:f:vhc:o:t" -l "shrink,compress,native-build,debug,root-override,rootfs,kernel:,firmware:,no-vendor-package,help,custom:,overlay:,timestamp" -n "$0" -- "$@")"
     then
-        usage 0
+        usage
+        return 1
     fi
+    eval set -- "$TEMP"
 
-    while (( $# > 0 ))
+    local RBUILD_SHRINK="false"
+    local RBUILD_COMPRESSION="false"
+    local DEBOS_OPTIONS=
+    local DEBOS_ROOTFS="false"
+    local RBUILD_DEBUG="false"
+    local RBUILD_KERNEL=
+    local RBUILD_KERNEL_DBG=
+    local RBUILD_HEADER=
+    local RBUILD_FIRMWARE=
+    local RBUILD_OVERLAY=
+    local RBUILD_TIMESTAMP="false"
+    local INSTALL_VENDOR_PACKAGE="true"
+    local RBUILD_AS_ROOT="false"
+    local NATIVE_BUILD="false"
+
+    copy_kernel() {
+        echo "Using custom kernel '$1' ..."
+        RBUILD_KERNEL="$(basename $1)"
+        cp "$1" "$SCRIPT_DIR/common/.packages/$RBUILD_KERNEL"
+        RBUILD_HEADER="linux-headers-${RBUILD_KERNEL#linux-image-}"
+        cp "$(dirname $1)/$RBUILD_HEADER" "$SCRIPT_DIR/common/.packages/$RBUILD_HEADER"
+    }
+    copy_kernel_dbg() {
+        echo "Using custom debug kernel '$1' ..."
+        RBUILD_KERNEL_DBG="$(basename $1)"
+        cp "$1" "$SCRIPT_DIR/common/.packages/$RBUILD_KERNEL_DBG"
+    }
+    copy_firmware() {
+        echo "Using custom firmware '$1' ..."
+        cp "$1" "$SCRIPT_DIR/common/.packages/$(basename "$1")"
+        RBUILD_FIRMWARE="$(basename $1)"
+    }
+    while true
     do
-        case "$1" in
-            -s | --shrink)
+        TEMP="$1"
+        shift
+        case "$TEMP" in
+            -s|--shrink)
                 if ! sudo -n true 2>/dev/null && ! [[ -t 0 ]]
                 then
                     error $EXIT_SUDO_PERMISSION "--shrink"
                 fi
-                RBUILD_SHRINK="yes"
-                shift
+                RBUILD_SHRINK="true"
                 ;;
             --compress)
-                RBUILD_COMPRESSION="yes"
-                shift
+                RBUILD_COMPRESSION="true"
                 ;;
-            -d | --debug)
+            -d|--debug)
                 DEBOS_OPTIONS="-v --debug-shell --show-boot"
-                shift
+                RBUILD_DEBUG="true"
                 ;;
-            -r | --rootfs)
-                DEBOS_ROOTFS="yes"
-                shift
+            -r|--rootfs)
+                DEBOS_ROOTFS="true"
                 ;;
-            -v | --no-vendor-package)
+            -v|--no-vendor-package)
                 INSTALL_VENDOR_PACKAGE="false"
+                ;;
+            -k|--kernel)
+                copy_kernel "$1"
                 shift
                 ;;
-            -k | --kernel)
-                cp "$2" "$SCRIPT_DIR/common/.packages/$(basename "$2")"
-                RBUILD_KERNEL="$(basename $2)"
-                shift 2
-                ;;
-            -f | --firmware)
-                cp "$2" "$SCRIPT_DIR/common/.packages/$(basename "$2")"
-                RBUILD_FIRMWARE="$(basename $2)"
-                shift 2
-                ;;
-            --native-debos)
-                RBUILD_NATIVE_DEBOS="yes"
+            -f|--firmware)
+                copy_firmware "$1"
                 shift
                 ;;
-            --shrink-image)
-                shrink "$2"
-                exit
+            -c|--custom)
+                local pkgs=(u-boot-$1_*.deb ../bsp/u-boot-$1_*.deb)
+                if (( ${#pkgs[@]} > 0 ))
+                then
+                    copy_firmware "${pkgs[0]}"
+                fi
+                pkgs=(linux-image-*-$1_*.deb ../bsp/linux-image-*-$1_*.deb)
+                if (( ${#pkgs[@]} > 0 ))
+                then
+                    copy_kernel "${pkgs[0]}"
+                fi
+                if $RBUILD_DEBUG
+                then
+                    pkgs=(linux-image-*-$1-dbg_*.deb ../bsp/linux-image-*-$1-dbg_*.deb)
+                    if (( ${#pkgs[@]} > 0 ))
+                    then
+                        copy_kernel_dbg "${pkgs[0]}"
+                    fi
+                fi
+                shift
                 ;;
-            --write-image)
-                write-image "$2" "$3"
+            -n|--native-build)
+                NATIVE_BUILD="true"
                 ;;
-            --json)
-                json "$2"
+            -t|--timestamp)
+                RBUILD_TIMESTAMP="true"
                 ;;
-            -h | --help)
-                usage 0
+            -o|--overlay)
+                RBUILD_OVERLAY="$1"
+                shift
                 ;;
-            --root)
+            -h|--help)
+                usage
+                return
+                ;;
+            --)
+                break
+                ;;
+            --root-override)
                 RBUILD_AS_ROOT="true"
-                shift
                 ;;
-            -*)
-                error $EXIT_UNKNOWN_OPTION "$1"
+            *)
+                error $EXIT_UNKNOWN_OPTION "$TEMP"
                 ;;
-            *) break ;;
         esac
     done
 
@@ -410,10 +490,20 @@ build() {
         error $EXIT_RBUILD_AS_ROOT
     fi
 
-    if (( $# < 1 ))
+    if (( $# == 0))
     then
-        error $EXIT_TOO_FEW_ARGUMENTS
+        usage
+        return
     fi
+
+    TEMP="$1"
+    case "$TEMP" in
+        shrink-image|write-image|json)
+            shift
+            "$TEMP" "$@"
+            return
+            ;;
+    esac
 
     local DEBOS_TUPLE="$@"
     local BOARDS=($(get_supported_boards))
@@ -453,6 +543,13 @@ build() {
     local SOC_FAMILY="$(get_soc_family $SOC)"
     local PARTITION_TYPE="$(get_partition_type $SOC_FAMILY)"
 
+    if $RBUILD_TIMESTAMP
+    then
+        RBUILD_TIMESTAMP="_$(date --iso-8601=m | tr -d :)_${PARTITION_TYPE}"
+    else
+        RBUILD_TIMESTAMP=""
+    fi
+
     case $DISTRO in
         debian)
             local SUITE="bullseye"
@@ -463,27 +560,39 @@ build() {
     esac
 
     local ARCH="arm64"
-    local IMAGE="${BOARD}_${DISTRO}_${SUITE}_${FLAVOR}.img"
+    local IMAGE="${BOARD}_${DISTRO}_${SUITE}_${FLAVOR}${RBUILD_TIMESTAMP}.img"
     local EFI_END=${EFI_END:-"32MiB"}
     
     # Release targeting image in case previous shrink failed
-    if [[ "$RBUILD_SHRINK" == "yes" ]] && [[ -e /dev/mapper/loop* ]]
+    if $RBUILD_SHRINK && [[ -e /dev/mapper/loop* ]]
     then
         sudo kpartx -d "$IMAGE"
     fi
 
-    if [[ "$RBUILD_NATIVE_DEBOS" != "yes" ]]
+    if ! $NATIVE_BUILD
     then
         docker pull godebos/debos:latest
     fi
 
     mkdir -p "$SCRIPT_DIR/.rootfs"
-    if [[ "$DEBOS_ROOTFS" == "yes" ]] || [[ ! -e "$SCRIPT_DIR/.rootfs/${DISTRO}_${SUITE}_${FLAVOR}.tar" ]]
+
+    if $DEBOS_ROOTFS || [[ ! -e "$SCRIPT_DIR/.rootfs/${DISTRO}_${SUITE}_base.tar" ]]
+    then
+        pushd "$SCRIPT_DIR"
+        debos $DEBOS_OPTIONS "$SCRIPT_DIR/common/intermediate.yaml" \
+            -t architecture:"$ARCH" \
+            -t distro:"$DISTRO" -t suite:"$SUITE"
+        popd
+    else
+        echo "Using ${DISTRO}_${SUITE}_base.tar intermediate rootfs."
+    fi
+
+    if $DEBOS_ROOTFS || [[ ! -e "$SCRIPT_DIR/.rootfs/${DISTRO}_${SUITE}_${FLAVOR}.tar" ]]
     then
         pushd "$SCRIPT_DIR"
         debos $DEBOS_OPTIONS "$SCRIPT_DIR/common/rootfs.yaml" \
             -t architecture:"$ARCH" \
-            -t board:"$BOARD" -t distro:"$DISTRO" -t suite:"$SUITE" -t flavor:"$FLAVOR"
+            -t distro:"$DISTRO" -t suite:"$SUITE" -t flavor:"$FLAVOR"
         popd
     else
         echo "Using ${DISTRO}_${SUITE}_${FLAVOR}.tar rootfs."
@@ -499,10 +608,10 @@ build() {
         -t board:"$BOARD" -t distro:"$DISTRO" -t suite:"$SUITE" -t flavor:"$FLAVOR" \
         -t soc:"$SOC" -t soc_family:"$SOC_FAMILY" \
         -t image:"$IMAGE" -t efi_end:"$EFI_END" -t partition_type:"$PARTITION_TYPE" \
-        -t kernel:"$RBUILD_KERNEL" -t firmware:"$RBUILD_FIRMWARE" \
-        -t install_vendor_package:"$INSTALL_VENDOR_PACKAGE"
+        -t kernel:"$RBUILD_KERNEL" -t kernel_dbg:"$RBUILD_KERNEL_DBG" -t header:"$RBUILD_HEADER" -t firmware:"$RBUILD_FIRMWARE" \
+        -t install_vendor_package:"$INSTALL_VENDOR_PACKAGE" -t overlay:"$RBUILD_OVERLAY"
 
-    if [[ "$RBUILD_SHRINK" == "yes" ]]
+    if $RBUILD_SHRINK
     then
         if ! sudo -n true 2>/dev/null
         then
@@ -511,40 +620,26 @@ build() {
             echo "The process is paused to prevent sudo timeout on asking for password."
             read -p "Please press enter to continue..." i
         fi
-        shrink "$IMAGE"
+        shrink-image "$IMAGE"
     fi
 
     sha512sum "$IMAGE" > "$IMAGE.sha512"
     chown $USER: "$IMAGE"
     
-    if [[ "$RBUILD_COMPRESSION" == "yes" ]]
+    if $RBUILD_COMPRESSION
     then
         xz -fT 0 "$IMAGE"
     fi
-}
 
-finish() {
     $NOTIFY_SEND "rbuild is finished."
     TZ=UTC0 printf 'Total execution time: %(%H:%M:%S)T\n' $SECONDS
 }
 
-set -e
+set -euo pipefail
+shopt -s nullglob
 
 LC_ALL="C"
 LANG="C"
 LANGUAGE="C"
 
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-
-if command -v notify-send >/dev/null
-then
-    NOTIFY_SEND=notify-send
-else
-    NOTIFY_SEND=echo
-fi
-
-SECONDS=0
-
-build "$@"
-
-finish
+main "$@"

@@ -10,7 +10,10 @@
 {{- $partition_type := .partition_type -}}
 
 {{- $kernel := .kernel -}}
+{{- $kernel_dbg := .kernel_dbg -}}
+{{- $header := .header -}}
 {{- $firmware := .firmware -}}
+{{- $overlay := .overlay -}}
 {{- $install_vendor_package := or .install_vendor_package "true" -}}
 
 {{- $radxa_mirror := "https://radxa-repo.github.io/apt" -}}
@@ -27,7 +30,7 @@ actions:
   - action: image-partition
     description: Set up on-disk layout
     imagename: {{ $image }}
-    imagesize: 5GiB
+    imagesize: 6GiB
     partitiontype: {{ $partition_type }}
     mountpoints:
       - mountpoint: /
@@ -64,6 +67,37 @@ actions:
     # u-boot-menu will add root= in append for us
     setup-kernel-cmdline: false
 
+{{ if and (eq $install_vendor_package "true") (eq $flavor "kde") (eq $distro "debian") }}
+
+  - action: recipe
+    description: Add {{ $soc_family }}-{{ $suite }} Repo
+    recipe: scripts/add_repo.yaml
+    variables:
+      origin: radxa-{{ $soc_family }}
+      suite: {{ $soc_family }}-{{ $suite }}
+      base_url: {{ $radxa_mirror }}
+      priority: 1001
+
+  - action: run
+    description: Downgrade to vendor packages
+    chroot: true
+    command: |
+      set -e
+      apt-get update
+      apt-get full-upgrade -y --allow-downgrades
+
+  - action: apt
+    description: Install task-{{ $board }} package
+    packages:
+      - task-{{ $board }}
+
+  - action: overlay
+    description: Install vendor overlays
+    source: overlays/{{ $soc_family }}
+    destination: /
+
+{{ end }}
+
 {{ if ne $soc_family "generic" }}
 
   {{ if eq $firmware "" }}
@@ -77,7 +111,7 @@ actions:
 
   - action: recipe
     description: Install custom firmware
-    recipe: hack_install_deb.yaml
+    recipe: scripts/hack_install_deb.yaml
     variables:
       name: {{ $firmware }}
 
@@ -122,40 +156,73 @@ actions:
 
   - action: recipe
     description: Install custom kernel
-    recipe: hack_install_deb.yaml
+    recipe: scripts/hack_install_deb.yaml
     variables:
       name: {{ $kernel }}
 
 {{ end }}
 
-{{ if and (eq $install_vendor_package "true") (eq $flavor "kde") (eq $distro "debian") }}
+{{ if ne $kernel_dbg "" }}
 
   - action: recipe
-    description: Add {{ $soc_family }}-{{ $suite }} Repo
-    recipe: add_repo.yaml
+    description: Install custom debug kernel
+    recipe: scripts/hack_install_deb.yaml
     variables:
-      origin: radxa-{{ $soc_family }}
-      suite: {{ $soc_family }}-{{ $suite }}
-      base_url: {{ $radxa_mirror }}
-      priority: 1001
+      name: {{ $kernel_dbg }}
 
-  - action: run
-    description: Downgrade to vendor packages
-    chroot: true
-    command: |
-      set -e
-      apt update
-      apt full-upgrade -y --allow-downgrades
+{{ end }}
+
+{{ if eq $header "" }}
+
+  {{ if eq $soc_family "generic" }}
+
+    - action: apt
+      description: Install upstream kernel header
+      packages:
+    {{ if eq $distro "debian" }}
+        - linux-headers-{{ $architecture }}
+    {{ else if eq $distro "ubuntu" }}
+        - linux-headers-generic
+    {{ end }}
+
+  {{ else }}
 
   - action: apt
-    description: Install task-{{ $board }} package
+    description: Install Radxa kernel header
     packages:
-      - task-{{ $board }}
+      - linux-headers-{{ $board }}
 
-  - action: overlay
-    description: Install vendor overlays
-    source: overlays/{{ $soc_family }}
-    destination: /
+  {{ end }}
+
+{{ else }}
+
+  - action: recipe
+    description: Install custom kernel header
+    recipe: scripts/hack_install_deb.yaml
+    variables:
+      name: {{ $header }}
+
+{{ end }}
+
+  - action: recipe
+    description: Install dkms packages
+    recipe: scripts/dkms.yaml
+    variables:
+      distro: {{ $distro }}
+      board: {{ $board }}
+
+  - action: run
+    description: Preload device tree overlay from default kernel
+    chroot: true
+    script: scripts/copy_overlay.bash {{ $soc_family }}
+
+{{ if $overlay }}
+
+  - action: recipe
+    description: Enable overlay {{ $overlay }}
+    recipe: scripts/enable_overlay.yaml
+    variables:
+      overlay: {{ $overlay }}
 
 {{ end }}
 
@@ -165,7 +232,8 @@ actions:
     command: |
       set -e
       rsetup update_hostname {{ $board }}
+      echo "IMAGE='$date'" >> /etc/build_info
 
   - action: recipe
     description: Clean up rootfs
-    recipe: clean.yaml
+    recipe: scripts/clean.yaml

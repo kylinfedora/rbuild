@@ -5,21 +5,22 @@
 architecture: {{ $architecture }}
 
 actions:
-  - action: recipe
-    description: Install CLI packages
-    recipe: cli.yaml
-    variables:
-      distro: {{ $distro }}
-
   - action: apt
     description: Install KDE specific packages
     packages:
       - bluedevil
+      - kde-config-plymouth
       - kde-config-sddm
       - kinfocenter
+      - kio-extras
+      - konqueror
       - kscreen
       - kwin-x11
+      - plasma-discover
       - plasma-nm
+      - plymouth
+      - plymouth-theme-breeze
+      - plymouth-themes
       - qml-module-org-kde-newstuff
       - sddm-theme-breeze
       - systemsettings
