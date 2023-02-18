@@ -6,10 +6,19 @@ architecture: {{ $architecture }}
 
 actions:
   - action: apt
-    description: Install sway packages
+    description: Install LXQt specific packages
     packages:
-      - sway
-      - foot
+      - bluedevil
+      - gnome-themes-extra
+      - lightdm
+      - oxygen-icon-theme
+      - papirus-icon-theme
+      - qterminal
+{{ if eq $distro "debian" }}
+      - task-lxqt-desktop
+{{ else }}
+      - lxqt
+{{ end }}
 
   - action: recipe
     description: Install common desktop packages

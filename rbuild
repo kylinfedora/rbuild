@@ -139,24 +139,28 @@ Supported image generation options:
                             Require running rbuild with sudo
     -d, --debug             Drop into a debug shell when build failed
     -r, --rootfs            Do not use saved rootfs and regenerate it
-    -k, --kernel [deb]      Use custom Linux kernel package
+    -k, --kernel <deb>      Use custom Linux kernel package
                             This option also requires the matching kernel header package
                             under the same folder
-    -f, --firmware [deb]    Use custom firmware package
-    -c, --custom [profile]  Try matching locally built bsp packages with the same profile
+    -f, --firmware <deb>    Use custom firmware package
+    -c, --custom <profile>  Try matching locally built bsp packages with the same profile
                             Implies --kernel and --firmware if available packages are found
                             If --debug is specified before this option, rbuild will also
                             search debug version of the package first
-    -v, --no-vendor-package Do not install vendor packages
-    -o, --overlay [profile] Specify an optional overlay that should be enabled in the image
+    -v[but_this_package], --no-vendor-package[=but_this_package] 
+                            When no optional argument is provided:
+                                    vendor packages will not be installed
+                            When optional argument is provided:
+                                    install specified vendor package instead
+    -o, --overlay <profile> Specify an optional overlay that should be enabled in the image
     -t, --timestamp         Add build timestamp to the filename
     -h, --help              Show this help message
 
 Alternative commands
-    json [catagory]         Print supported options in json format
+    json <catagory>         Print supported options in json format
                             Available catagories: $(get_supported_infos)
-    shrink-image [image]    Shrink generated image
-    write-image [image] [/dev/block]
+    shrink-image <image>    Shrink generated image
+    write-image <image> </dev/block>
                             Write image to block device, support --shrink flag
 
 Supported board:
@@ -366,7 +370,7 @@ main() {
     mkdir -p "$SCRIPT_DIR/common/.packages"
 
     local ARGV=("$@")
-    if ! local TEMP="$(getopt -o "sndrk:f:vhc:o:t" -l "shrink,compress,native-build,debug,root-override,rootfs,kernel:,firmware:,no-vendor-package,help,custom:,overlay:,timestamp" -n "$0" -- "$@")"
+    if ! local TEMP="$(getopt -o "sndrk:f:v::hc:o:t" -l "shrink,compress,native-build,debug,root-override,rootfs,kernel:,firmware:,no-vendor-package::,help,custom:,overlay:,timestamp" -n "$0" -- "$@")"
     then
         usage
         return 1
@@ -428,7 +432,8 @@ main() {
                 DEBOS_ROOTFS="true"
                 ;;
             -v|--no-vendor-package)
-                INSTALL_VENDOR_PACKAGE="false"
+                INSTALL_VENDOR_PACKAGE="${1:-false}"
+                shift
                 ;;
             -k|--kernel)
                 copy_kernel "$1"
@@ -509,6 +514,20 @@ main() {
     local BOARDS=($(get_supported_boards))
     local SUITES=($(get_supported_suites))
     local FLAVORS=($(get_supported_flavors))
+
+    # Add hidden & non-officially supported options
+    # Some of them will be broken!
+    for i in "$SCRIPT_DIR"/configs/.*.conf
+    do
+        i="$(basename "$i")"
+        BOARDS+=("${i%.conf}")
+    done
+    SUITES+=("focal")
+    for i in "$SCRIPT_DIR"/common/flavors/.*.yaml
+    do
+        i="$(basename "$i")"
+        FLAVORS+=("${i%.yaml}")
+    done
 
     local BOARD=
     local SUITE=${SUITES[0]}
@@ -609,7 +628,8 @@ main() {
         -t soc:"$SOC" -t soc_family:"$SOC_FAMILY" \
         -t image:"$IMAGE" -t efi_end:"$EFI_END" -t partition_type:"$PARTITION_TYPE" \
         -t kernel:"$RBUILD_KERNEL" -t kernel_dbg:"$RBUILD_KERNEL_DBG" -t header:"$RBUILD_HEADER" -t firmware:"$RBUILD_FIRMWARE" \
-        -t install_vendor_package:"$INSTALL_VENDOR_PACKAGE" -t overlay:"$RBUILD_OVERLAY"
+        -t install_vendor_package:"$INSTALL_VENDOR_PACKAGE" -t overlay:"$RBUILD_OVERLAY" \
+        -t rbuild_rev:"$(git rev-parse HEAD)$(git diff --quiet || echo '-dirty')" -t rbuild_cmd:"./rbuild ${ARGV[*]}"
 
     if $RBUILD_SHRINK
     then
@@ -641,5 +661,6 @@ shopt -s nullglob
 LC_ALL="C"
 LANG="C"
 LANGUAGE="C"
+PATH="/usr/sbin:$PATH"
 
 main "$@"

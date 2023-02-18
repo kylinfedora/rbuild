@@ -8,9 +8,18 @@ actions:
   - action: apt
     description: Install common desktop packages
     packages:
+      - breeze-cursor-theme
+      - desktop-base
 {{ if eq $distro "debian"}}
       - firefox-esr
 {{ else if eq $distro "ubuntu"}}
       - firefox
 {{ end }}
+      - fonts-noto-cjk
+      - gvfs
+      - gvfs-backends
+      - gvfs-fuse
+      - plymouth
+      - plymouth-theme-breeze
+      - plymouth-themes
       - xdg-utils

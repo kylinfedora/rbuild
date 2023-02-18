@@ -6,10 +6,15 @@ architecture: {{ $architecture }}
 
 actions:
   - action: apt
-    description: Install sway packages
+    description: Install Xfce specific packages
     packages:
-      - sway
-      - foot
+      - blueman
+{{ if eq $distro "debian" }}
+      - task-xfce-desktop
+{{ else }}
+      - xfce4
+{{ end }}
+      - xfce4-terminal
 
   - action: recipe
     description: Install common desktop packages

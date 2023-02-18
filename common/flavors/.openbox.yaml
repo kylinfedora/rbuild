@@ -6,10 +6,17 @@ architecture: {{ $architecture }}
 
 actions:
   - action: apt
-    description: Install sway packages
+    description: Install Openbox specific packages
     packages:
-      - sway
-      - foot
+      - feh
+      - obconf
+      - openbox
+      - openbox-menu
+      - lightdm
+      - lxterminal
+      - pcmanfm
+      - xinit
+      - xserver-xorg-input-all
 
   - action: recipe
     description: Install common desktop packages
