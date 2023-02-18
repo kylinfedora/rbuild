@@ -16,8 +16,6 @@ actions:
     description: Install firmwares
     packages:
 {{ if eq $distro "debian"}}
-      - firmware-brcm80211
-      - firmware-iwlwifi
       - firmware-linux
       - firmware-realtek
 {{ else if eq $distro "ubuntu"}}
@@ -36,12 +34,9 @@ actions:
       - file
       - gpg
       - haveged
-      - htop
       - less
       - locales
       - man-db
-      - nano
-      - ntfs-3g
       - python-is-python3
       - python3
       - python3-pip
@@ -60,30 +55,17 @@ actions:
   - action: apt
     description: Install network utilities
     packages:
-      - bluetooth
       - ldnsutils
       - ifupdown
       - iproute2
       - iputils-ping
-      - iw
       - network-manager
-      - samba
-      - wireless-regdb
-      - wpasupplicant
 
-  - action: apt
-    description: Install audio utilities
-    packages:
-      - alsa-ucm-conf
-      - alsa-utils
-      - pulseaudio
-      - pulseaudio-module-bluetooth
 
   - action: apt
     description: Install hardware utilities
     packages:
       - gpiod
-      - hdparm
       - i2c-tools
       - mtd-utils
       - pciutils
@@ -101,6 +83,5 @@ actions:
     packages:
       - radxa-firmware
       - rsetup
-      - libreelec-alsa-utils
       - radxa-otgutils
       - radxa-bootutils
